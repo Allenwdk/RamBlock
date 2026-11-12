@@ -23,3 +23,6 @@ the last flush sends no command.
 `Test/concurrent.cpp` runs readers, writers, a flusher and power-loss snapshots
 with the same lock structure in write-back and write-through modes; build it
 with `-fsanitize=thread` as well. `Test/writeback.cpp` covers flush failures.
+
+A write marked Force Unit Access completes after its pages and overlay bitmap
+are durable. Write-back mode uses the same flush path as synchronize.

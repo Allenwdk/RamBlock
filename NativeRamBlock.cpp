@@ -54,6 +54,7 @@ volatile uint64_t native_data_io_reads = 0, native_data_io_read_bytes = 0, nativ
                   native_data_io_gate_ticks = 0, native_data_io_max_ticks = 0,
                   native_data_flushes = 0, native_data_flush_ticks = 0, native_data_flush_blocks = 0, native_data_timer_flushes = 0;
 volatile uint32_t native_data_write_back = 0;
+volatile uint64_t native_data_fua_requests = 0;
 volatile uint64_t native_data_persist_pages = 0, native_data_persist_loaded = 0, native_data_persist_writes = 0,
                   native_data_persist_syncs = 0, native_data_persist_errors = 0, native_data_persist_first_lba = 0,
                   native_data_persist_present = 0;
@@ -411,7 +412,7 @@ bool NativeRamBlock::start(IOService *provider)
 }
 
 IOReturn NativeRamBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 block, UInt64 count,
-    IOStorageAttributes *, IOStorageCompletion *completion)
+    IOStorageAttributes *attributes, IOStorageCompletion *completion)
 {
   if (!buffer || !completion || !completion->action || !count || block >= capacity ||
       count > capacity - block || buffer->getLength() < count * 512 ||
@@ -426,9 +427,17 @@ IOReturn NativeRamBlock::doAsyncReadWrite(IOMemoryDescriptor *buffer, UInt64 blo
     ++inflight;
     IOLockUnlock(gate);
     uint64_t done = 0, waited = gated - entered;
-    const IOReturn result = directReadWrite(buffer, block * 512, bytes, &done, &waited);
-    const uint64_t spent = mach_absolute_time() - entered;
     const bool out = buffer->getDirection() == kIODirectionOut;
+    IOReturn result = directReadWrite(buffer, block * 512, bytes, &done, &waited);
+    if (writeBack && out && attributes && (attributes->options & kIOStorageOptionForceUnitAccess)) {
+      __atomic_fetch_add(&native_data_fua_requests, 1, __ATOMIC_RELAXED);
+      // FUA completion includes both the Data pages and their overlay bitmap.
+      if (result == kIOReturnSuccess && !flushStore(false)) {
+        result = kIOReturnIOError;
+        done = 0;
+      }
+    }
+    const uint64_t spent = mach_absolute_time() - entered;
     __atomic_fetch_add(out ? &native_data_io_writes : &native_data_io_reads, 1, __ATOMIC_RELAXED);
     __atomic_fetch_add(out ? &native_data_io_write_bytes : &native_data_io_read_bytes, bytes, __ATOMIC_RELAXED);
     __atomic_fetch_add(out ? &native_data_io_write_ticks : &native_data_io_read_ticks, spent, __ATOMIC_RELAXED);
